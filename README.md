@@ -6,17 +6,91 @@ Client SDK for [Opticrum](https://github.com/ashuralyk/opticrum), a decentralize
 
 Opticrum is a protocol that lets CKB holders earn yield by renting out channel capacity. Buyers post **Orders** — on-chain cells offering to pay rent for inbound liquidity. Sellers match those orders with pre-created Fiber channels, producing **Match** cells that accumulate linear rent over time. Sellers extract rent as it accrues; buyers can cancel unmatched orders or top up matched channels.
 
-The SDK is the client side of this protocol. It wraps the core calculator into a simplified API that **builds unsigned transactions**. It never touches keys, wallets, or signatures — your application handles that.
+The SDK is a **pure-Rust client library** that wraps the core calculator into a simplified, unsigned-transaction API. It builds `TransactionSkeleton` structs — your application handles keys, signing, and broadcasting.
 
-## Why It Exists
+## Quick Start
 
-There are two ways to interact with Opticrum:
+Add to your `Cargo.toml`:
 
-1. **Assemble transactions by hand** — pick the right cells, set the right lock scripts, pack the right molecule-encoded args, resolve type IDs, balance inputs and outputs. Error-prone and tightly coupled to internal contract layout.
+```toml
+[dependencies]
+opticrum-sdk = { path = "path/to/opticrum-sdk" }
+```
 
-2. **Use the SDK** — call `build_create_order(...)` and get back a balanced, unsigned `TransactionSkeleton` ready to sign.
+### Basic usage
 
-The SDK exists so you never have to know how Order args are packed, which cell deps the contract needs, or how `ScriptEx::Reference` resolves to a live code cell. It encodes those invariants once and exposes intent-level functions instead.
+```rust
+use opticrum_sdk::sdk::OpticrumSdk;
+use ckb_cinnabar_calculator::rpc::RpcClient;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Connect to a CKB node
+    let rpc = RpcClient::new("https://testnet.ckbapp.dev", None);
+    let sdk = OpticrumSdk::new(rpc);
+
+    // Read chain state
+    let tip = sdk.get_tip_block().await?;
+    println!("Tip block: {tip}");
+
+    let orders = sdk.scan_orders(None).await?;
+    println!("Live orders: {}", orders.len());
+
+    let matches = sdk.scan_matches(None).await?;
+    println!("Live matches: {}", matches.len());
+
+    Ok(())
+}
+```
+
+## Build
+
+### Library (all targets)
+
+```bash
+cargo build
+```
+
+### With CLI binary
+
+```bash
+cargo build --features cli
+```
+
+### WASM (browser)
+
+Requires [wasm-pack](https://rustwasm.github.io/wasm-pack/) and the `wasm32-unknown-unknown` target:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo build --features wasm --target wasm32-unknown-unknown
+```
+
+For a publishable npm package:
+
+```bash
+wasm-pack build --features wasm --out-dir pkg
+```
+
+### Tests
+
+Tests use `FakeRpcClient` — an in-memory chain backend. No CKB node or compiled contracts needed.
+
+```bash
+cargo test                              # all tests
+cargo test -- --nocapture               # with debug output
+cargo test deadline                     # specific test module
+cargo test --test sdk_tests             # specific test file
+```
+
+The contract binary at `../opticrum/build/release/opticrum` is read once per test run to seed the fake chain.
+
+### Lint
+
+```bash
+cargo clippy --all-targets --all-features
+cargo fmt --check
+```
 
 ## Architecture
 
@@ -30,40 +104,228 @@ opticrum-sdk/  ← this crate     simplified API, dashboard aggregation, deadlin
 WASM  /  Uniffi  /  CLI         platform bindings
 ```
 
-The SDK is a **thin wrapper** over the calculator. All protocol logic — how orders become matches, how rent is computed, how the contract verifier expects cells to be arranged — lives in the calculator. The SDK adds three things:
+The SDK is a **thin wrapper** over the calculator. It adds three things:
 
-- **Aggregation** — scan the chain once and get `DashboardData` (totals, yield distribution, near-exhaustion counts). No database, no cache, just an in-memory fold over live cells.
-- **Deadline awareness** — project when a match runs out of capacity, classify its health (Healthy / Warning / Critical / Exhausted), sort by urgency. The math is ceiling division — the same formula the contract verifier uses.
-- **Platform reach** — the same read operations are available on WASM (browser), Uniffi (iOS/Android), and a CLI binary, all from one codebase.
+- **Aggregation** — scan the chain once and get `DashboardData` (totals, yield distribution, near-exhaustion counts)
+- **Deadline awareness** — project when a match runs out of capacity, classify health (Healthy / Warning / Critical / Exhausted)
+- **Platform reach** — the same operations are available on WASM (browser), Uniffi (iOS/Android), and a CLI binary
 
-## Core Abstractions
+## API Overview
 
-**`OpticrumSdk<T: RPC>`** — the main entry point, generic over the chain backend. Read operations (`scan_orders`, `scan_matches`, `get_tip_block`) are available everywhere. Write operations (`build_create_order`, `build_cancel_order`, etc.) are gated off WASM since it lacks secp256k1 signing support.
+All operations are on `OpticrumSdk<T: RPC>`. Read operations work on all targets; write operations are gated off WASM since browsers can't sign secp256k1.
 
-**The skip-chain invariant** — the SDK never defines its own copies of protocol types. `OrderInfo`, `MatchInfo`, `OrderArgs`, `OrderData`, `MatchArgs`, `MatchData`, `OutPoint`, `Xudt` all flow down from `opticrum-calculator` or `opticrum-protocol`. If a type needs to change, it starts upstream and the SDK inherits the update automatically.
+### Read operations (all targets)
 
-**Dashboard** — `compute_dashboard` is a pure function of on-chain state. Given an RPC handle and an optional pubkey filter, it scans all live Order and Match cells, folds them into `DashboardData`, and returns. There is no incremental state, no caching layer, no index. Every call sees the chain as it is right now.
+| Method | Returns | Description |
+|---|---|---|
+| `get_tip_block()` | `u64` | Current chain tip block number |
+| `scan_orders(pubkey?)` | `Vec<OrderInfo>` | All live Order cells, optionally filtered by buyer pubkey |
+| `scan_matches(pubkey?)` | `Vec<MatchInfo>` | All live Match cells, optionally filtered by buyer pubkey |
 
-**Deadline** — `projected_exhaustion_block` divides remaining capacity by rent rate. No timestamp math, no approximations — it's the exact same block-level arithmetic the on-chain verifier uses. `MatchHealth` maps remaining blocks to four tiers based on configurable thresholds.
+### Write operations (native only, not WASM)
 
-## Design Choices
+| Method | Returns | Description |
+|---|---|---|
+| `build_create_order(...)` | `TransactionSkeleton` | Post a new liquidity order |
+| `build_cancel_order(...)` | `TransactionSkeleton` | Cancel an unmatched order (burn pattern) |
+| `build_match_order(...)` | `TransactionSkeleton` | Match an order with a Fiber channel |
+| `build_extract_rent(...)` | `TransactionSkeleton` | Extract accrued rent from a match |
+| `build_update_match(...)` | `TransactionSkeleton` | Buyer injects or withdraws capacity |
+| `build_destroy_match(...)` | `TransactionSkeleton` | Destroy an exhausted match (burn pattern) |
 
-**Generic over RPC, not coupled to HTTP.** `OpticrumSdk<T: RPC>` accepts `RpcClient` (production reqwest client), `FakeRpcClient` (deterministic in-memory chain for tests), or any custom implementation. The SDK itself has no network dependency — it only knows the `RPC` trait.
+### Dashboard & monitoring
 
-**Unsigned by design.** Every `build_*` method returns a `TransactionSkeleton`. No private keys, no signing, no broadcasting. The consumer balances, signs, and sends. You can inspect the skeleton before committing, or compose it into larger transactions.
+```rust
+use opticrum_sdk::dashboard::compute_dashboard;
+use opticrum_sdk::deadline::{find_matches_near_exhaustion, find_exhausted_matches};
 
-**No database.** Dashboard data is computed on the fly by scanning live cells. There is no stored state to drift from the chain, no cache invalidation to manage, no migration to run. The trade-off is latency — a full scan reads every live Order and Match cell — but for a protocol where cells number in the hundreds, this is the right default.
+// Aggregate on-chain statistics
+let data = compute_dashboard(sdk.rpc(), None).await?;
+println!("Total orders: {}", data.total_orders);
+println!("Active matches: {}", data.active_matches);
 
-**Authorization lives on-chain.** The SDK has a client-side exhaustion guard (`SdkError::NotExhausted` prevents building a destroy transaction for a match that still has capacity), but access control — who can cancel, who can destroy — is enforced by the contract verifier, not the SDK.
+// Find matches expiring within ~7 days (50400 blocks)
+let urgent = find_matches_near_exhaustion(sdk.rpc(), tip, 50400, None).await?;
+```
 
-## Platform Bindings
+### Type summaries
 
-- **WASM** (`wasm` feature) — `WasmSdk` wraps `OpticrumSdk<RpcClient>` with JSON serialization via `serde-wasm-bindgen`. Read-only: the `build_*` methods are excluded from the WASM target since browsers can't sign secp256k1.
-- **Uniffi** (`uniffi` feature) — flat FFI records (`FfiOrderSummary`, `FfiMatchSummary`, etc.) and async functions that create their own `RpcClient` internally. No generics cross the FFI boundary. Codegen target for Kotlin (Android) and Swift (iOS).
-- **CLI** (`cli` feature) — `opticrum-cli` for quick chain inspection. Scan orders, compute dashboards, monitor match exhaustion. Read-only; transaction builders are available but not yet exposed as CLI commands (except cancel/destroy).
+The `dashboard` module provides presentation helpers:
 
-## Testing
+```rust
+use opticrum_sdk::dashboard::{summarize_order, summarize_match, get_order_detail, get_match_detail};
 
-Tests use `FakeRpcClient` — an in-memory chain backend seeded with the Opticrum contract binary. No CKB node, no network, no compiled contracts needed at test time. Every test starts from a known state and runs in milliseconds.
+let summary = summarize_order(&order_info);
+println!("Yield: {:.2}% APR", summary.annual_yield_bps / 100.0);
+```
 
-The lifecycle tests exercise the full state machine end-to-end: create → cancel, create → match → extract, match → exhaust → destroy.
+## Feature Flags
+
+| Feature | Adds | Use case |
+|---|---|---|
+| `cli` | `clap`, `tokio`, CLI binary | Command-line chain inspection |
+| `wasm` | `wasm-bindgen`, `serde-wasm-bindgen` | Browser / JavaScript |
+| `uniffi` | FFI-safe record types + async functions | iOS (Swift) / Android (Kotlin) |
+
+## Web Integration (WASM)
+
+The `wasm` feature exposes a `WasmSdk` class via `wasm-bindgen`. All return values are JSON — parse them on the JS side.
+
+### Build the WASM package
+
+```bash
+wasm-pack build --features wasm --out-dir pkg
+```
+
+### JavaScript / TypeScript usage
+
+```js
+import init, { WasmSdk } from './pkg/opticrum_sdk.js';
+
+await init();
+
+// Connect to testnet (or use new("url", indexer?) / new_mainnet())
+const sdk = new WasmSdk.new_testnet();
+
+// Read chain state
+const tip = await sdk.get_tip_block();
+console.log('Tip block:', tip);
+
+// Scan orders (pass null for all, or a pubkey hex string to filter)
+const orders = JSON.parse(await sdk.scan_orders(null));
+console.log(`Found ${orders.length} orders`);
+
+// Scan matches
+const matches = JSON.parse(await sdk.scan_matches(null));
+console.log(`Found ${matches.length} matches`);
+
+// Dashboard
+const dashboard = JSON.parse(await sdk.dashboard());
+console.log('Total capacity locked:', dashboard.total_capacity_locked_ckb, 'CKB');
+
+// Find matches expiring within ~7 days
+const expiring = JSON.parse(await sdk.find_expiring_matches(50400));
+for (const m of expiring) {
+  console.log(`${m.match_outpoint}: ${m.health} (${m.blocks_remaining} blocks left)`);
+}
+```
+
+### WASM limitations
+
+- **Read-only.** `build_*` transaction builders are not available on WASM — browsers lack secp256k1 signing. Build transactions server-side or in a native app.
+- **JSON serialization.** All complex types cross the WASM boundary as JSON strings via `serde-wasm-bindgen`. Parse with `JSON.parse()`.
+- **No streaming.** Each method is an async request/response. For real-time updates, poll or use a server-side event source.
+
+## Mobile Integration (Uniffi — iOS & Android)
+
+The `uniffi` feature provides flat FFI-safe types and async functions for iOS (Swift) and Android (Kotlin) via [Uniffi](https://mozilla.github.io/uniffi-rs/) code generation.
+
+### Project setup
+
+Add `opticrum-sdk` to your consuming crate's `Cargo.toml` with the `uniffi` feature enabled. The UDL file is at `uniffi/opticrum_sdk.udl`.
+
+### Generate bindings
+
+```bash
+# Kotlin (Android)
+uniffi-bindgen generate uniffi/opticrum_sdk.udl --language kotlin --out-dir generated/kotlin
+
+# Swift (iOS)
+uniffi-bindgen generate uniffi/opticrum_sdk.udl --language swift --out-dir generated/swift
+```
+
+### FFI type reference
+
+FFI records are flat structs with no generics or lifetimes — safe to pass across the FFI boundary.
+
+| FFI Record | Fields |
+|---|---|
+| `FfiOrderSummary` | `outpoint`, `fiber_pubkey`, `buyer_lock_hash`, `channel_capacity_ckb`, `shannons_per_block`, `annual_yield_bps`, `has_fiber_address`, `fiber_address`, `xudt_amount` |
+| `FfiMatchSummary` | `outpoint`, `channel_outpoint`, `shannons_per_block`, `annual_yield_bps`, `remaining_capacity_ckb`, `last_extraction_block`, `blocks_since_extraction`, `extractable_now_ckb`, `is_exhausted`, `projected_exhaustion_block` |
+| `FfiDashboardStats` | `tip_block`, `total_orders`, `total_matches`, `active_matches`, `exhausted_matches`, `total_capacity_locked_ckb`, `avg_shannons_per_block`, `avg_annual_yield_bps`, `matches_near_exhaustion` |
+| `FfiMatchDeadline` | `match_outpoint`, `channel_outpoint`, `shannons_per_block`, `remaining_capacity_ckb`, `last_extraction_block`, `match_creation_block`, `projected_exhaustion_block`, `blocks_remaining`, `estimated_hours_remaining`, `health`, `extractable_now_ckb` |
+
+### FFI functions
+
+Each function creates its own `RpcClient` internally — no generics cross the FFI boundary.
+
+| Function | Returns | Description |
+|---|---|---|
+| `ffi_scan_orders(rpc_url, indexer_url, pubkey?)` | `Vec<FfiOrderSummary>` | Scan live orders |
+| `ffi_scan_matches(rpc_url, indexer_url, pubkey?)` | `Vec<FfiMatchSummary>` | Scan live matches |
+| `ffi_dashboard(rpc_url, indexer_url)` | `FfiDashboardStats` | Aggregated statistics |
+| `ffi_find_expiring_matches(rpc_url, indexer_url, threshold)` | `Vec<FfiMatchDeadline>` | Matches near exhaustion |
+
+### Swift usage sketch
+
+```swift
+// After generating bindings with uniffi-bindgen
+let stats = try await ffiDashboard(
+    ckbRpcUrl: "https://testnet.ckbapp.dev",
+    indexerUrl: "https://testnet.ckbapp.dev"
+)
+print("Active matches: \(stats.activeMatches)")
+print("Total CKB locked: \(stats.totalCapacityLockedCkb)")
+
+let expiring = try await ffiFindExpiringMatches(
+    ckbRpcUrl: "https://testnet.ckbapp.dev",
+    indexerUrl: "https://testnet.ckbapp.dev",
+    blocksThreshold: 50400
+)
+for match in expiring {
+    print("\(match.matchOutpoint): \(match.health)")
+}
+```
+
+### Kotlin usage sketch
+
+```kotlin
+// After generating bindings with uniffi-bindgen
+suspend fun loadDashboard() {
+    val stats = ffiDashboard(
+        "https://testnet.ckbapp.dev",
+        "https://testnet.ckbapp.dev"
+    )
+    println("Active matches: ${stats.activeMatches}")
+}
+
+suspend fun checkExpiring() {
+    val expiring = ffiFindExpiringMatches(
+        "https://testnet.ckbapp.dev",
+        "https://testnet.ckbapp.dev",
+        50400u
+    )
+    expiring.forEach { deadline ->
+        println("${deadline.matchOutpoint}: ${deadline.health}")
+    }
+}
+```
+
+## CLI
+
+```bash
+cargo run --features cli -- --rpc https://testnet.ckbapp.dev scan-orders
+cargo run --features cli -- --rpc https://testnet.ckbapp.dev scan-matches
+cargo run --features cli -- --rpc https://testnet.ckbapp.dev dashboard
+cargo run --features cli -- --rpc https://testnet.ckbapp.dev monitor --blocks-threshold 50400
+```
+
+All CLI commands are read-only. The transaction builders are available in the library but not yet exposed as CLI subcommands.
+
+## Design Decisions
+
+**Generic over RPC.** `OpticrumSdk<T: RPC>` accepts `RpcClient` (production), `FakeRpcClient` (tests), or any custom implementation. The SDK has no hard network dependency.
+
+**Unsigned by design.** Every `build_*` method returns a `TransactionSkeleton`. Inspect it, compose it, then sign and broadcast from your application.
+
+**No database.** Dashboard data is computed on the fly by scanning live cells. No stored state, no cache invalidation, no migrations.
+
+**Authorization lives on-chain.** The SDK has a client-side exhaustion guard (`SdkError::NotExhausted`), but access control is enforced by the contract verifier, not the SDK.
+
+**Skip-chain invariant.** The SDK never defines its own copies of protocol types (`OrderInfo`, `MatchInfo`, `OrderArgs`, etc.). All types flow down from `opticrum-calculator` or `opticrum-protocol`.
+
+## Related Projects
+
+- [Opticrum Contracts & Calculator](https://github.com/nervosnetwork/fiber) — on-chain contracts + transaction assembly
+- [Fiber Network](https://github.com/nervosnetwork/fiber) — CKB payment channel network
+- [CKB](https://github.com/nervosnetwork/ckb) — Nervos Common Knowledge Base
