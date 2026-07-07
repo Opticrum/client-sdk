@@ -1,0 +1,94 @@
+// Uniffi interface definition for opticrum-sdk.
+//
+// This file describes the FFI boundary for iOS (Swift) and Android (Kotlin).
+// The actual implementation uses `#[uniffi::export]` proc macros in src/uniffi.rs;
+// this UDL serves as documentation and an alternative code-generation path.
+
+namespace opticrum_sdk {
+    // Scan live Order cells
+    [Async]
+    sequence<FfiOrderSummary> ffi_scan_orders(
+        string ckb_rpc_url,
+        string indexer_url,
+        string? fiber_pubkey_hex
+    );
+
+    // Scan live Match cells
+    [Async]
+    sequence<FfiMatchSummary> ffi_scan_matches(
+        string ckb_rpc_url,
+        string indexer_url,
+        string? fiber_pubkey_hex
+    );
+
+    // Compute aggregated dashboard statistics
+    [Async]
+    FfiDashboardStats ffi_dashboard(
+        string ckb_rpc_url,
+        string indexer_url
+    );
+
+    // Find matches near exhaustion
+    [Async]
+    sequence<FfiMatchDeadline> ffi_find_expiring_matches(
+        string ckb_rpc_url,
+        string indexer_url,
+        u32 blocks_threshold
+    );
+};
+
+dictionary FfiOutPoint {
+    string tx_hash;
+    u32 index;
+};
+
+dictionary FfiOrderSummary {
+    string outpoint;
+    string fiber_pubkey;
+    string buyer_lock_hash;
+    f64 channel_capacity_ckb;
+    u64 shannons_per_block;
+    f64 annual_yield_bps;
+    boolean has_fiber_address;
+    string? fiber_address;
+    u128 xudt_amount;
+};
+
+dictionary FfiMatchSummary {
+    string outpoint;
+    string channel_outpoint;
+    u64 shannons_per_block;
+    f64 annual_yield_bps;
+    f64 remaining_capacity_ckb;
+    u64 last_extraction_block;
+    u64 blocks_since_extraction;
+    f64 extractable_now_ckb;
+    boolean is_exhausted;
+    u64 projected_exhaustion_block;
+};
+
+dictionary FfiDashboardStats {
+    u64 tip_block;
+    u32 total_orders;
+    u32 total_matches;
+    u32 active_matches;
+    u32 exhausted_matches;
+    f64 total_capacity_locked_ckb;
+    f64 avg_shannons_per_block;
+    f64 avg_annual_yield_bps;
+    u32 matches_near_exhaustion;
+};
+
+dictionary FfiMatchDeadline {
+    string match_outpoint;
+    string channel_outpoint;
+    u64 shannons_per_block;
+    f64 remaining_capacity_ckb;
+    u64 last_extraction_block;
+    u64 match_creation_block;
+    u64 projected_exhaustion_block;
+    u64 blocks_remaining;
+    f64 estimated_hours_remaining;
+    string health;
+    f64 extractable_now_ckb;
+};

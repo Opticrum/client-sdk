@@ -1,0 +1,55 @@
+[package]
+name = "opticrum-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Client SDK for the Opticrum decentralized liquidity marketplace on CKB"
+license = "MIT"
+
+[features]
+default = []
+cli = ["dep:clap", "dep:tokio"]
+wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:serde-wasm-bindgen"]
+uniffi = []
+
+[dependencies]
+# Core — the SDK wraps these crates (all path deps, already compiled)
+opticrum-calculator = { path = "../opticrum/calculator/opticrum" }
+opticrum-protocol = { path = "../opticrum/opticrum-protocol" }
+ckb-cinnabar-calculator = { path = "../../ckb-cinnabar/cinnabar/calculate" }
+
+# Serialization (transitively available from ckb-cinnabar, but needed as direct dep)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+
+# CLI only
+clap = { version = "4", features = ["derive"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+
+# WASM only
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+
+# Uniffi: add `uniffi` to your consuming crate for code generation.
+# The UDL file is at uniffi/opticrum_sdk.udl.
+# See src/uniffi.rs for the FFI-safe functions.
+
+# Platform-specific reqwest (matches cinnabar's pattern)
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+reqwest = { version = "0.12", features = ["json", "native-tls"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "opticrum-cli"
+path = "src/bin/opticrum-cli.rs"
+required-features = ["cli"]
