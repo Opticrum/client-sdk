@@ -13,9 +13,13 @@ uniffi = []
 
 [dependencies]
 # Core — the SDK wraps these crates (all path deps, already compiled)
-opticrum-calculator = { path = "../opticrum/calculator/opticrum" }
-opticrum-protocol = { path = "../opticrum/opticrum-protocol" }
-ckb-cinnabar-calculator = { path = "../../ckb-cinnabar/cinnabar/calculate" }
+# opticrum-calculator = { path = "../opticrum/calculator/opticrum" }
+# opticrum-protocol = { path = "../opticrum/opticrum-protocol" }
+# ckb-cinnabar-calculator = { path = "../../ckb-cinnabar/cinnabar/calculate" }
+
+opticrum-calculator = { git = "https://github.com/Opticrum/ckb-contract-script", branch = "master" }
+opticrum-protocol = { git = "https://github.com/Opticrum/ckb-contract-script", branch = "master" }
+ckb-cinnabar-calculator = { git = "https://github.com/ashuralyk/ckb-cinnabar", branch = "master" }
 
 # Serialization (transitively available from ckb-cinnabar, but needed as direct dep)
 serde = { version = "1", features = ["derive"] }

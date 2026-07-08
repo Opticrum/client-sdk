@@ -287,6 +287,7 @@ dependencies = [
 [[package]]
 name = "ckb-cinnabar-calculator"
 version = "0.1.0"
+source = "git+https://github.com/ashuralyk/ckb-cinnabar?branch=master#b9f6d186cf2e21388307e3183c0af5feb046ea13"
 dependencies = [
  "async-trait",
  "bech32",
@@ -316,6 +317,7 @@ dependencies = [
 [[package]]
 name = "ckb-cinnabar-verifier"
 version = "0.1.0"
+source = "git+https://github.com/ashuralyk/ckb-cinnabar?branch=master#b9f6d186cf2e21388307e3183c0af5feb046ea13"
 dependencies = [
  "blake2b-ref",
  "ckb-std",
@@ -1931,6 +1933,7 @@ dependencies = [
 [[package]]
 name = "opticrum-calculator"
 version = "0.1.0"
+source = "git+https://github.com/Opticrum/ckb-contract-script?branch=master#702500cbe270f6dc242b7a339e459af068ef0fda"
 dependencies = [
  "ckb-cinnabar-calculator",
  "opticrum-protocol",
@@ -1939,6 +1942,7 @@ dependencies = [
 [[package]]
 name = "opticrum-protocol"
 version = "0.1.0"
+source = "git+https://github.com/Opticrum/ckb-contract-script?branch=master#702500cbe270f6dc242b7a339e459af068ef0fda"
 dependencies = [
  "ckb-cinnabar-verifier",
 ]

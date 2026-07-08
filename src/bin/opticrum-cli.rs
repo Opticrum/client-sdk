@@ -1,12 +1,14 @@
 //! Opticrum CLI — command-line interface for the Opticrum SDK.
 //!
-//! Builds unsigned transactions and displays on-chain data.
-//! No wallet management — the consumer handles signing.
+//! Builds, signs (via ckb-cli), and broadcasts Opticrum transactions.
+//! Displays on-chain data. No wallet management — signing delegates to ckb-cli.
 
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 use ckb_cinnabar_calculator::{
     address::{Address, AddressPayload},
+    instruction::Instruction,
+    operation::basic::AddSecp256k1SighashSignaturesWithCkbCli,
     re_exports::{
         ckb_jsonrpc_types::{OutPoint as JsonOutPoint, Uint32},
         ckb_types::{
@@ -17,6 +19,7 @@ use ckb_cinnabar_calculator::{
     },
     rpc::{Network, RpcClient, RPC},
     skeleton::TransactionSkeleton,
+    TransactionCalculator,
 };
 use clap::{Parser, Subcommand};
 use opticrum_calculator::{
@@ -88,9 +91,9 @@ enum Commands {
         #[arg(long)]
         annual_yield: f64,
 
-        /// Number of blocks to pre-fund rent for
+        /// Number of days of rent to pre-fund (e.g. 30 for ~30 days)
         #[arg(long)]
-        escrow_blocks: u64,
+        escrow_days: u64,
 
         /// xUDT amount (for token-denominated orders)
         #[arg(long)]
@@ -103,6 +106,10 @@ enum Commands {
         /// Fiber node multiaddr for peer discovery
         #[arg(long)]
         fiber_address: Option<String>,
+
+        /// Temp directory for ckb-cli tx JSON file
+        #[arg(long, default_value = "/tmp")]
+        cache_path: PathBuf,
     },
     /// Build a balanced unsigned cancel-order transaction (Burn pattern)
     CancelOrder {
@@ -413,10 +420,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fiber_pubkey,
             channel_capacity_ckb,
             annual_yield,
-            escrow_blocks,
+            escrow_days,
             xudt_amount,
             xudt_category,
             fiber_address,
+            cache_path,
         } => {
             let buyer_addr = Address::from_str(&buyer)
                 .map_err(|e| format!("invalid buyer address '{buyer}': {e}"))?;
@@ -430,6 +438,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Derive rent params: annual_yield (e.g. 5 → 5%) → shannons_per_block
             let shannons_per_block =
                 annual_yield_to_rent_per_block(channel_capacity, annual_yield / 100.0);
+
+            // Convert days to blocks using on-chain timestamps for accuracy
+            let escrow_blocks = opticrum_sdk::chain::days_to_blocks(sdk.rpc(), escrow_days)
+                .await
+                .map_err(|e| format!("failed to estimate escrow blocks: {e}"))?;
+
             let rent_capacity = shannons_per_block * escrow_blocks;
 
             let order_args = OrderArgs::new(parse_pubkey(&fiber_pubkey)?, lock_hash);
@@ -439,7 +453,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 shannons_per_block,
             );
 
-            let skeleton = sdk
+            let signer = buyer_addr.clone();
+
+            let mut skeleton = sdk
                 .build_create_order(
                     buyer_addr,
                     &order_args,
@@ -450,7 +466,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .await?;
 
-            print_skeleton("Unsigned CreateOrder Transaction", &skeleton);
+            eprintln!("Signing transaction with ckb-cli...");
+            let sign_op = AddSecp256k1SighashSignaturesWithCkbCli {
+                signer_address: signer,
+                cache_path,
+                keep_cache_file: false,
+            };
+            let sign_instruction = Instruction::new(vec![Box::new(sign_op)]);
+            TransactionCalculator::new(vec![sign_instruction])
+                .apply_skeleton(sdk.rpc(), &mut skeleton)
+                .await
+                .map_err(|e| format!("ckb-cli signing failed: {e:#}"))?;
+            eprintln!("Transaction signed successfully.");
+
+            eprintln!("Broadcasting transaction...");
+            let tx_hash = skeleton
+                .send_and_wait(sdk.rpc(), 0, None)
+                .await
+                .map_err(|e| format!("broadcast failed: {e:#}"))?;
+            println!("Transaction broadcast successfully!");
+            println!("  Tx hash: {tx_hash:#x}");
         }
 
         Commands::CancelOrder { outpoint } => {

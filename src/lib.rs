@@ -10,6 +10,7 @@
 //! - `wasm`: Enables wasm-bindgen bindings for browser usage (requires wasm-pack)
 //! - `uniffi`: Enables Uniffi FFI bindings for iOS/Android
 
+pub mod chain;
 pub mod dashboard;
 pub mod deadline;
 pub mod error;

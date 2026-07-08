@@ -11,12 +11,10 @@ use opticrum_calculator::{
 };
 
 use crate::{
+    chain::BLOCKS_PER_DAY,
     error::SdkError,
     types::{MatchDeadline, MatchHealth},
 };
-
-/// Approximate number of blocks per day (24 × 3600 / 12s block interval).
-const BLOCKS_PER_DAY: u64 = 7_200;
 
 /// Blocks per week.
 const BLOCKS_PER_WEEK: u64 = 7 * BLOCKS_PER_DAY; // 50_400
