@@ -14,9 +14,9 @@ uniffi = []
 [dependencies]
 # Core — the SDK wraps these crates (local path deps; aligned with the
 # opticrum-wallet-core crate so protocol types are a single unified version).
-opticrum-calculator = { path = "../opticrum/calculator/opticrum" }
-opticrum-protocol = { path = "../opticrum/opticrum-protocol" }
-ckb-cinnabar-calculator = { path = "../../ckb-cinnabar/cinnabar/calculate" }
+opticrum-calculator = { git = "https://github.com/Opticrum/ckb-contract-script", rev = "803523a" }
+opticrum-protocol = { git = "https://github.com/Opticrum/ckb-contract-script", rev = "803523a" }
+ckb-cinnabar-calculator = { git = "https://github.com/ashuralyk/ckb-cinnabar", rev = "f50d8e9" }
 
 # Serialization (transitively available from ckb-cinnabar, but needed as direct dep)
 serde = { version = "1", features = ["derive"] }
