@@ -67,7 +67,7 @@ impl WasmSdk {
     /// Scan live Order cells, optionally filtered by buyer Fiber pubkey.
     ///
     /// `fiber_pubkey_hex` — optional 66-char hex-encoded compressed pubkey.
-    /// Returns JSON array of `OrderSummary` objects.
+    /// Returns JSON string (array of `OrderSummary` objects).
     #[wasm_bindgen]
     pub async fn scan_orders(&self, fiber_pubkey_hex: Option<String>) -> Result<JsValue, JsValue> {
         let pk = fiber_pubkey_hex.map(|h| parse_pubkey(&h)).transpose()?;
@@ -76,7 +76,8 @@ impl WasmSdk {
             .iter()
             .map(crate::dashboard::summarize_order)
             .collect();
-        serde_wasm_bindgen::to_value(&summaries).map_err(to_js_err)
+        let json = serde_json::to_string(&summaries).map_err(to_js_err)?;
+        Ok(JsValue::from_str(&json))
     }
 
     /// Scan live Match cells, optionally filtered by buyer Fiber pubkey.
@@ -89,7 +90,8 @@ impl WasmSdk {
             .iter()
             .map(|m| crate::dashboard::summarize_match(m, tip))
             .collect();
-        serde_wasm_bindgen::to_value(&summaries).map_err(to_js_err)
+        let json = serde_json::to_string(&summaries).map_err(to_js_err)?;
+        Ok(JsValue::from_str(&json))
     }
 
     // -----------------------------------------------------------------------
@@ -98,20 +100,21 @@ impl WasmSdk {
 
     /// Compute aggregated dashboard statistics from on-chain data.
     ///
-    /// Returns JSON `DashboardData` object.
+    /// Returns JSON string (`DashboardData` object).
     #[wasm_bindgen]
     pub async fn dashboard(&self) -> Result<JsValue, JsValue> {
         let data = compute_dashboard(self.inner.rpc(), None)
             .await
             .map_err(to_js_err)?;
-        serde_wasm_bindgen::to_value(&data).map_err(to_js_err)
+        let json = serde_json::to_string(&data).map_err(to_js_err)?;
+        Ok(JsValue::from_str(&json))
     }
 
     /// Find matches near exhaustion.
     ///
     /// `blocks_threshold` — matches exhausting within this many blocks
     /// are included (e.g., 50400 = ~7 days).
-    /// Returns JSON array of `MatchDeadline` objects.
+    /// Returns JSON string (array of `MatchDeadline` objects).
     #[wasm_bindgen]
     pub async fn find_expiring_matches(&self, blocks_threshold: u32) -> Result<JsValue, JsValue> {
         let tip = self.inner.get_tip_block().await.map_err(to_js_err)?;
@@ -119,7 +122,8 @@ impl WasmSdk {
             find_matches_near_exhaustion(self.inner.rpc(), tip, blocks_threshold as u64, None)
                 .await
                 .map_err(to_js_err)?;
-        serde_wasm_bindgen::to_value(&deadlines).map_err(to_js_err)
+        let json = serde_json::to_string(&deadlines).map_err(to_js_err)?;
+        Ok(JsValue::from_str(&json))
     }
 }
 

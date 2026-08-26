@@ -14,6 +14,7 @@ use ckb_cinnabar_calculator::{
     skeleton::{ChangeReceiver, TransactionSkeleton},
 };
 use opticrum_calculator::{
+    config::HESITATION_BLOCKS,
     reader,
     types::{CompressedPubkey, MatchInfo, OrderInfo},
 };
@@ -23,6 +24,13 @@ use opticrum_calculator::{
     calculator,
     types::{MatchArgs, OrderArgs, OrderData},
 };
+
+/// Extra fee rate (shannons/byte) added over the chain's `min_fee_rate` when
+/// balancing. The fee is estimated on the pre-balance (no-change, no-witness)
+/// size, but the balanced tx grows — the change cell plus per-input witnesses
+/// — so without a margin the submitted fee undercuts the verifier's minimum
+/// and the node rejects the tx with `LowFeeRate`.
+const BALANCE_FEE_MARGIN: u64 = 2000;
 
 use crate::error::SdkError;
 
@@ -127,7 +135,7 @@ impl<T: RPC> OpticrumSdk<T> {
         let balance = Instruction::<T>::new(vec![Box::new(BalanceTransaction {
             balancer: buyer.payload().into(),
             change_receiver: ChangeReceiver::Address(buyer),
-            additional_fee_rate: 0,
+            additional_fee_rate: BALANCE_FEE_MARGIN,
         })]);
 
         let (skeleton, _log) = TransactionCalculator::new(vec![prepare, create, balance])
@@ -149,7 +157,7 @@ impl<T: RPC> OpticrumSdk<T> {
         let balance = Instruction::<T>::new(vec![Box::new(BalanceTransaction {
             balancer: buyer.payload().into(),
             change_receiver: ChangeReceiver::Address(buyer),
-            additional_fee_rate: 0,
+            additional_fee_rate: BALANCE_FEE_MARGIN,
         })]);
 
         let (skeleton, _log) = TransactionCalculator::new(vec![prepare, cancel, balance])
@@ -172,7 +180,7 @@ impl<T: RPC> OpticrumSdk<T> {
         let balance = Instruction::<T>::new(vec![Box::new(BalanceTransaction {
             balancer: seller.payload().into(),
             change_receiver: ChangeReceiver::Address(seller),
-            additional_fee_rate: 0,
+            additional_fee_rate: BALANCE_FEE_MARGIN,
         })]);
 
         let (skeleton, _log) = TransactionCalculator::new(vec![prepare, match_tx, balance])
@@ -194,12 +202,23 @@ impl<T: RPC> OpticrumSdk<T> {
         match_info: MatchInfo,
         tip_block: u64,
     ) -> Result<TransactionSkeleton, SdkError> {
+        // The on-chain verifier requires the seller to wait the 12h hesitation
+        // window (anchored on the match cell's producing block while the seller
+        // has never extracted) before extracting. Mirror that check here for a
+        // clear error (an exhausted match routes to destroy, which is not gated).
+        if !match_info.is_exhausted(tip_block)
+            && match_info.match_data.last_extraction_block == 0
+            && tip_block.saturating_sub(match_info.match_current_block) <= HESITATION_BLOCKS
+        {
+            return Err(SdkError::HesitationNotElapsed);
+        }
+
         let prepare = Instruction::<T>::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
         let extract = calculator::extract_rent::<T>(seller.clone(), match_info, tip_block);
         let balance = Instruction::<T>::new(vec![Box::new(BalanceTransaction {
             balancer: seller.payload().into(),
             change_receiver: ChangeReceiver::Address(seller),
-            additional_fee_rate: 0,
+            additional_fee_rate: BALANCE_FEE_MARGIN,
         })]);
 
         let (skeleton, _log) = TransactionCalculator::new(vec![prepare, extract, balance])
@@ -210,27 +229,64 @@ impl<T: RPC> OpticrumSdk<T> {
         Ok(skeleton)
     }
 
-    /// Build a balanced unsigned update-match transaction (buyer injects or withdraws).
+    /// Build a balanced unsigned update-match transaction (buyer injects or does
+    /// a full dump).
     ///
-    /// Positive `capacity_delta` = inject, negative = withdraw.
+    /// The on-chain rules:
+    /// - Within the 12h hesitation window the buyer may ONLY dump ALL rent
+    ///   (the match becomes exhausted); a partial withdrawal or any injection
+    ///   is rejected.
+    /// - After the window (or once the seller has extracted) the buyer is
+    ///   committed: only injecting is allowed.
+    ///
+    /// `capacity_delta` = negative for a full dump (all unoccupied capacity
+    /// removed), positive for an inject. This mirrors the on-chain checks so
+    /// callers get a clear error up front.
     pub async fn build_update_match(
         &self,
         buyer: Address,
         match_info: MatchInfo,
         new_xudt_amount: u128,
         capacity_delta: i64,
+        tip_block: u64,
     ) -> Result<TransactionSkeleton, SdkError> {
+        let old_xudt = match_info.match_data.xudt_amount;
+        let withdrawing = capacity_delta < 0 || new_xudt_amount < old_xudt;
+        let injecting = capacity_delta > 0 || new_xudt_amount > old_xudt;
+
+        let within_window = match_info.match_data.last_extraction_block == 0
+            && tip_block.saturating_sub(match_info.match_current_block) <= HESITATION_BLOCKS;
+
+        if withdrawing {
+            // Must dump ALL rent (both xUDT and unoccupied capacity).
+            if new_xudt_amount != 0 || capacity_delta != -(match_info.ckb_capacity as i64) {
+                return Err(SdkError::PartialWithdrawNotAllowed);
+            }
+            if !within_window {
+                return Err(SdkError::WithdrawWindowExpired);
+            }
+        } else if injecting && within_window {
+            // No injection inside the hesitation window.
+            return Err(SdkError::InjectDuringHesitation);
+        } else if !injecting {
+            // No-op update.
+            return Err(SdkError::InvalidInput(
+                "buyer update must inject funds or dump all rent (no-op)".into(),
+            ));
+        }
+
         let prepare = Instruction::<T>::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
         let update = calculator::update_match_buyer::<T>(
             buyer.clone(),
             match_info,
             new_xudt_amount,
             capacity_delta,
+            tip_block,
         );
         let balance = Instruction::<T>::new(vec![Box::new(BalanceTransaction {
             balancer: buyer.payload().into(),
             change_receiver: ChangeReceiver::Address(buyer),
-            additional_fee_rate: 0,
+            additional_fee_rate: BALANCE_FEE_MARGIN,
         })]);
 
         let (skeleton, _log) = TransactionCalculator::new(vec![prepare, update, balance])
@@ -263,7 +319,7 @@ impl<T: RPC> OpticrumSdk<T> {
         let balance = Instruction::<T>::new(vec![Box::new(BalanceTransaction {
             balancer: seller.payload().into(),
             change_receiver: ChangeReceiver::Address(seller),
-            additional_fee_rate: 0,
+            additional_fee_rate: BALANCE_FEE_MARGIN,
         })]);
 
         let (skeleton, _log) = TransactionCalculator::new(vec![prepare, destroy, balance])

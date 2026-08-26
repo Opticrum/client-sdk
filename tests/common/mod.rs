@@ -163,12 +163,9 @@ fn seed_opticrum_contract_into_rpc(rpc: &mut FakeRpcClient) {
     let contract_data = fs::read(&contract_path)
         .unwrap_or_else(|e| panic!("Failed to read contract binary at {:?}: {e}", contract_path));
 
-    // Run AddFakeContractCelldep which both adds to skeleton AND seeds into RPC.
-    // But actually, AddFakeContractCelldep only adds to skeleton. We need to
-    // manually seed the cell into fake_rpc.
     let type_script = Script::new_builder()
         .code_hash(H256(ckb_cinnabar_calculator::skeleton::TYPE_ID_CODE_HASH.into()).pack())
-        .hash_type(ScriptHashType::Type.into())
+        .hash_type(ScriptHashType::Type)
         .args(H256::default().as_bytes().pack())
         .build();
 
@@ -221,12 +218,12 @@ pub fn seed_header(rpc: &mut FakeRpcClient, block_number: u64, timestamp: u64) {
 pub fn seed_channel_cell(rpc: &mut FakeRpcClient, outpoint: &OutPoint, capacity: u64) {
     let channel_type = Script::new_builder()
         .code_hash(H256([0xCCu8; 32]).pack())
-        .hash_type(ScriptHashType::Data1.into())
+        .hash_type(ScriptHashType::Data1)
         .args(Bytes::new().pack())
         .build();
     let lock = Script::new_builder()
         .code_hash(H256(CONTRACT_MOCK).pack())
-        .hash_type(ScriptHashType::Type.into())
+        .hash_type(ScriptHashType::Type)
         .args(Bytes::copy_from_slice(&[0xABu8; 20]).pack())
         .build();
     let cell = CellOutputEx::new_from_scripts(
@@ -238,7 +235,7 @@ pub fn seed_channel_cell(rpc: &mut FakeRpcClient, outpoint: &OutPoint, capacity:
     .expect("build channel cell");
     let packed = PackedOutPoint::new_builder()
         .tx_hash(H256(outpoint.tx_hash).pack())
-        .index(outpoint.index.pack())
+        .index(outpoint.index)
         .build();
     let header = fake_header_view(CHANNEL_CREATED_BLOCK, random_u64(), random_u64());
     rpc.insert_fake_cell(packed, cell, Some(header));

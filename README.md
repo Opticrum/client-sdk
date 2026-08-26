@@ -130,7 +130,7 @@ All operations are on `OpticrumSdk<T: RPC>`. Read operations work on all targets
 | `build_cancel_order(...)` | `TransactionSkeleton` | Cancel an unmatched order (burn pattern) |
 | `build_match_order(...)` | `TransactionSkeleton` | Match an order with a Fiber channel |
 | `build_extract_rent(...)` | `TransactionSkeleton` | Extract accrued rent from a match |
-| `build_update_match(...)` | `TransactionSkeleton` | Buyer injects or withdraws capacity |
+| `build_update_match(...)` | `TransactionSkeleton` | Buyer injects capacity (after the 12h window) or dumps all rent (within it) |
 | `build_destroy_match(...)` | `TransactionSkeleton` | Destroy an exhausted match (burn pattern) |
 
 ### Dashboard & monitoring

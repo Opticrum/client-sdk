@@ -19,6 +19,15 @@ pub enum SdkError {
     NotExhausted(f64),
     /// The caller is not authorized for this operation.
     NotAuthorized(String),
+    /// Buyer withdrawal attempted outside the hesitation window (or after the
+    /// seller's first extraction).
+    WithdrawWindowExpired,
+    /// Seller extraction attempted before the hesitation window elapsed.
+    HesitationNotElapsed,
+    /// The buyer may only withdraw ALL rent (a full dump), not a partial amount.
+    PartialWithdrawNotAllowed,
+    /// Fund injection attempted inside the hesitation window (prohibited).
+    InjectDuringHesitation,
 }
 
 impl fmt::Display for SdkError {
@@ -35,6 +44,30 @@ impl fmt::Display for SdkError {
                 write!(f, "match is not exhausted (remaining: {remaining} CKB)")
             }
             Self::NotAuthorized(msg) => write!(f, "not authorized: {msg}"),
+            Self::WithdrawWindowExpired => {
+                write!(
+                    f,
+                    "buyer withdrawal window has expired (12h after match creation)"
+                )
+            }
+            Self::HesitationNotElapsed => {
+                write!(
+                    f,
+                    "seller cannot extract before the 12h hesitation window elapses"
+                )
+            }
+            Self::PartialWithdrawNotAllowed => {
+                write!(
+                    f,
+                    "buyer may only withdraw ALL rent (a full dump), not a partial amount"
+                )
+            }
+            Self::InjectDuringHesitation => {
+                write!(
+                    f,
+                    "fund injection is prohibited inside the 12h hesitation window"
+                )
+            }
         }
     }
 }

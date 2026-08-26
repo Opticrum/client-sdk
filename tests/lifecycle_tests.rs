@@ -3,7 +3,10 @@
 
 mod common;
 use common::*;
-use opticrum_calculator::types::{MatchArgs, MatchData, MatchInfo};
+use opticrum_calculator::{
+    config::HESITATION_BLOCKS,
+    types::{MatchArgs, MatchData, MatchInfo},
+};
 use opticrum_sdk::sdk::OpticrumSdk;
 
 // ---------------------------------------------------------------------------
@@ -131,8 +134,9 @@ async fn test_lifecycle_extract_rent() {
     )
     .await;
 
-    // Seed header at tip_block for AddHeaderDepByBlockNumber
-    let tip_block = MATCH_CREATED_BLOCK + 100;
+    // Seed header at tip_block for AddHeaderDepByBlockNumber. The tip must be
+    // past the 12h hesitation window or the seller-side guard rejects the extract.
+    let tip_block = MATCH_CREATED_BLOCK + HESITATION_BLOCKS + 100;
     seed_header(&mut rpc, tip_block, 1_000_000);
 
     let sdk = OpticrumSdk::new(rpc);
@@ -213,10 +217,14 @@ async fn test_lifecycle_update_match() {
     )
     .await;
 
+    // Injection is prohibited inside the window — seed the tip past it.
+    let tip_block = MATCH_CREATED_BLOCK + HESITATION_BLOCKS + 100;
+    seed_header(&mut rpc, tip_block, 1_000_000);
+
     let sdk = OpticrumSdk::new(rpc);
-    // Inject 100 CKB (positive delta)
+    // Inject 100 CKB (positive delta) after the window
     let skel = sdk
-        .build_update_match(test_address(), match_info, 0, 10_000_000_000)
+        .build_update_match(test_address(), match_info, 0, 10_000_000_000, tip_block)
         .await
         .expect("update_match should succeed");
 

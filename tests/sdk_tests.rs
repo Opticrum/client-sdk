@@ -6,7 +6,10 @@
 mod common;
 
 use common::*;
-use opticrum_calculator::types::{CompressedPubkey, MatchArgs, MatchData, MatchInfo};
+use opticrum_calculator::{
+    config::HESITATION_BLOCKS,
+    types::{CompressedPubkey, MatchArgs, MatchData, MatchInfo},
+};
 use opticrum_sdk::sdk::OpticrumSdk;
 
 // ---------------------------------------------------------------------------
@@ -203,10 +206,14 @@ async fn test_build_update_match_positive_delta() {
     )
     .await;
 
+    // Injection is prohibited INSIDE the window — seed the tip past it.
+    let tip_block = MATCH_CREATED_BLOCK + HESITATION_BLOCKS + 100;
+    seed_header(&mut rpc, tip_block, 1_000_000);
+
     let sdk = OpticrumSdk::new(rpc);
-    // Inject capacity: positive delta (100 CKB)
+    // Inject capacity: positive delta (100 CKB), after the window
     let skel = sdk
-        .build_update_match(test_address(), match_info, 0, 10_000_000_000)
+        .build_update_match(test_address(), match_info, 0, 10_000_000_000, tip_block)
         .await
         .expect("build_update_match with positive delta should succeed");
 
@@ -242,12 +249,22 @@ async fn test_build_update_match_negative_delta() {
     )
     .await;
 
+    // Seed tip header for AddHeaderDepByBlockNumber (within the hesitation window)
+    let tip_block = MATCH_CREATED_BLOCK + 100;
+    seed_header(&mut rpc, tip_block, 1_000_000);
+
     let sdk = OpticrumSdk::new(rpc);
-    // Withdraw capacity: negative delta (50 CKB)
+    // Full dump: withdraw ALL rent (negative delta == -ckb_capacity, xudt → 0)
     let skel = sdk
-        .build_update_match(test_address(), match_info, 0, -5_000_000_000)
+        .build_update_match(
+            test_address(),
+            match_info,
+            0,
+            -(RENT_CAPACITY as i64),
+            tip_block,
+        )
         .await
-        .expect("build_update_match with negative delta should succeed");
+        .expect("build_update_match full dump should succeed");
 
     assert!(
         !skel.inputs.is_empty(),
@@ -258,6 +275,148 @@ async fn test_build_update_match_negative_delta() {
         "expected at least 2 inputs (match + buyer)"
     );
     assert!(!skel.outputs.is_empty(), "should have updated match output");
+}
+
+#[tokio::test]
+async fn test_build_update_match_withdraw_window_expired() {
+    let mut rpc = test_rpc().await;
+    seed_user_cell(&mut rpc, 200_000_000_000);
+    let ch_op = channel_outpoint();
+    seed_channel_cell(&mut rpc, &ch_op, CHANNEL_CAPACITY);
+
+    let order_args = test_order_args();
+    let match_args = MatchArgs::new(order_args, ch_op, seller_lock_hash());
+    let match_data = MatchData::new(0, SHANNONS_PER_BLOCK);
+
+    let match_info = seed_match(
+        &mut rpc,
+        &match_args,
+        &match_data,
+        RENT_CAPACITY,
+        MATCH_CREATED_BLOCK,
+    )
+    .await;
+
+    // Full dump past the 12h hesitation window → SDK rejects before building.
+    let tip_block = MATCH_CREATED_BLOCK + HESITATION_BLOCKS + 1;
+    seed_header(&mut rpc, tip_block, 1_000_000);
+
+    let sdk = OpticrumSdk::new(rpc);
+    let result = sdk
+        .build_update_match(
+            test_address(),
+            match_info,
+            0,
+            -(RENT_CAPACITY as i64),
+            tip_block,
+        )
+        .await;
+    match result {
+        Err(opticrum_sdk::error::SdkError::WithdrawWindowExpired) => {}
+        other => panic!("expected WithdrawWindowExpired, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_build_update_match_partial_withdraw_rejected() {
+    let mut rpc = test_rpc().await;
+    seed_user_cell(&mut rpc, 200_000_000_000);
+    let ch_op = channel_outpoint();
+    seed_channel_cell(&mut rpc, &ch_op, CHANNEL_CAPACITY);
+
+    let order_args = test_order_args();
+    let match_args = MatchArgs::new(order_args, ch_op, seller_lock_hash());
+    let match_data = MatchData::new(0, SHANNONS_PER_BLOCK);
+
+    let match_info = seed_match(
+        &mut rpc,
+        &match_args,
+        &match_data,
+        RENT_CAPACITY,
+        MATCH_CREATED_BLOCK,
+    )
+    .await;
+
+    let tip_block = MATCH_CREATED_BLOCK + 100;
+    seed_header(&mut rpc, tip_block, 1_000_000);
+
+    let sdk = OpticrumSdk::new(rpc);
+    // Partial withdraw (50 CKB ≠ full dump) → rejected.
+    let result = sdk
+        .build_update_match(test_address(), match_info, 0, -5_000_000_000, tip_block)
+        .await;
+    match result {
+        Err(opticrum_sdk::error::SdkError::PartialWithdrawNotAllowed) => {}
+        other => panic!("expected PartialWithdrawNotAllowed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_build_update_match_inject_within_window_rejected() {
+    let mut rpc = test_rpc().await;
+    seed_user_cell(&mut rpc, 200_000_000_000);
+    let ch_op = channel_outpoint();
+    seed_channel_cell(&mut rpc, &ch_op, CHANNEL_CAPACITY);
+
+    let order_args = test_order_args();
+    let match_args = MatchArgs::new(order_args, ch_op, seller_lock_hash());
+    let match_data = MatchData::new(0, SHANNONS_PER_BLOCK);
+
+    let match_info = seed_match(
+        &mut rpc,
+        &match_args,
+        &match_data,
+        RENT_CAPACITY,
+        MATCH_CREATED_BLOCK,
+    )
+    .await;
+
+    let tip_block = MATCH_CREATED_BLOCK + 100;
+    seed_header(&mut rpc, tip_block, 1_000_000);
+
+    let sdk = OpticrumSdk::new(rpc);
+    // Injection inside the window → rejected.
+    let result = sdk
+        .build_update_match(test_address(), match_info, 0, 10_000_000_000, tip_block)
+        .await;
+    match result {
+        Err(opticrum_sdk::error::SdkError::InjectDuringHesitation) => {}
+        other => panic!("expected InjectDuringHesitation, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_build_extract_rent_within_window_rejected() {
+    let mut rpc = test_rpc().await;
+    seed_seller_cell(&mut rpc, 200_000_000_000);
+    let ch_op = channel_outpoint();
+    seed_channel_cell(&mut rpc, &ch_op, CHANNEL_CAPACITY);
+
+    let order_args = test_order_args();
+    let match_args = MatchArgs::new(order_args, ch_op, seller_lock_hash());
+    let match_data = MatchData::new(0, SHANNONS_PER_BLOCK);
+
+    let match_info = seed_match(
+        &mut rpc,
+        &match_args,
+        &match_data,
+        RENT_CAPACITY,
+        MATCH_CREATED_BLOCK,
+    )
+    .await;
+
+    // Within the 12h hesitation window → the seller-side guard rejects the extract.
+    let tip_block = MATCH_CREATED_BLOCK + 100;
+    seed_header(&mut rpc, tip_block, 1_000_000);
+
+    let sdk = OpticrumSdk::new(rpc);
+    let result = sdk
+        .build_extract_rent(seller_address(), match_info, tip_block)
+        .await;
+    match result {
+        Err(opticrum_sdk::error::SdkError::HesitationNotElapsed) => {}
+        other => panic!("expected HesitationNotElapsed, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +499,7 @@ async fn test_build_create_order_with_xudt() {
             };
             OutPoint::new_builder()
                 .tx_hash(xudt_tx_hash.pack())
-                .index(0u32.pack())
+                .index(0u32)
                 .build()
         };
         let dummy_cell = ckb_cinnabar_calculator::skeleton::CellOutputEx::new_from_scripts(
@@ -373,7 +532,7 @@ async fn test_build_create_order_with_xudt() {
         };
         Script::new_builder()
             .code_hash(H256([0xABu8; 32]).pack())
-            .hash_type(ScriptHashType::Type.into())
+            .hash_type(ScriptHashType::Type)
             .args(vec![0x00u8; 32].pack())
             .build()
     };

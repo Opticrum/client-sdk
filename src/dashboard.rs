@@ -39,34 +39,38 @@ pub async fn compute_dashboard<T: RPC>(
     let (active, exhausted): (Vec<&MatchInfo>, Vec<&MatchInfo>) =
         matches.iter().partition(|m| !m.is_exhausted(tip_block));
 
-    let total_capacity_locked: u64 = matches.iter().map(|m| m.ckb_capacity).sum();
-    let total_orders_capacity: u64 = orders.iter().map(|o| o.ckb_capacity).sum();
+    // Demand / rate / yield are ORDER-side: only the Order cell carries
+    // `channel_capacity` (Match cells discard it at match time), so a match-side
+    // APY is not derivable on-chain. "Locked capacity" = total escrow held
+    // across order + match cells (the CKB the protocol currently holds).
+    let total_orders_capacity: u64 = orders.iter().map(|o| o.order_data.channel_capacity).sum();
+    let total_capacity_locked: u64 = orders.iter().map(|o| o.ckb_capacity).sum::<u64>()
+        + matches.iter().map(|m| m.ckb_capacity).sum::<u64>();
 
-    // Average rent-per-block across active matches
-    let avg_shannons: f64 = if active.is_empty() {
+    // Average rent-per-block across orders
+    let avg_shannons: f64 = if orders.is_empty() {
         0.0
     } else {
-        active
+        orders
             .iter()
-            .map(|m| m.match_data.shannons_per_block as f64)
+            .map(|o| o.order_data.shannons_per_block as f64)
             .sum::<f64>()
-            / active.len() as f64
+            / orders.len() as f64
     };
 
-    // Yield distribution + average yield
+    // Yield distribution + average yield over orders
     let mut yield_dist = YieldDistribution::standard();
     let mut total_yield_bps: f64 = 0.0;
-    let mut yield_count: usize = 0;
+    let yield_count = orders.len();
 
-    for m in &active {
-        // Use match capacity as proxy for channel capacity (see Design Notes)
-        let capacity = std::cmp::max(m.ckb_capacity, 1);
-        let annual_yield =
-            rent_per_block_to_annual_yield(m.match_data.shannons_per_block, capacity);
+    for o in &orders {
+        let annual_yield = rent_per_block_to_annual_yield(
+            o.order_data.shannons_per_block,
+            o.order_data.channel_capacity,
+        );
         let bps = (annual_yield * 10_000.0) as u64;
-        yield_dist.add(bps, m.ckb_capacity);
+        yield_dist.add(bps, o.order_data.channel_capacity);
         total_yield_bps += annual_yield * 10_000.0;
-        yield_count += 1;
     }
 
     let avg_annual_yield_bps = if yield_count > 0 {
